@@ -79,7 +79,7 @@ function width(s: number) {
 
 // ---------- state ----------
 type Bot = { s: number; off: number; tOff: number; ratio: number; base: number; kind: number; t: number; brake: number; passed: boolean; gap: number; col: string; spr?: number; ph?: number };
-type PT = "R" | "T" | "S" | "X" | "P" | "O" | "F" | "B" | "D" | "W";
+type PT = "A" | "R" | "T" | "S" | "X" | "P" | "O" | "F" | "B" | "D" | "W";
 type Pick = { s: number; off: number; type: PT; got: boolean };
 const DOWNS = "OFBDW";
 type Part = { x: number; y: number; vx: number; vy: number; life: number; c: string };
@@ -88,13 +88,26 @@ let st: St = "title";
 let level = 1, pS = 0, px = 0, camX = 0, speed = 0, score = 0, runT = 0, levelStart = 0, levelLen = 0;
 let bots: Bot[] = [], picks: Pick[] = [], parts: Part[] = [];
 let combo = 0, comboT = 0, boosts = 0, nextBoostAt = 3000, boostT = 0, regenT = 0, tvT = 0;
+// ---- car model (concept estimates; Porsche has published no performance data) ----
+const VMAX = 340, G = [0, 84, 67.4, 54.1, 43.4, 34.8, 27.9, 22.4], REDLINE = 8000, UPSHIFT = 7800;
+let vK = 0, gearN = 1, rpmN = 1000, shiftCut = 0, aeroT = 0, gearFlash = 0;
+const pxFromK = (L: number, k: number) => baseSpeed(L) * 1.2 * Math.pow(Math.max(0, k) / VMAX, 0.75);
+function vLimAt(s: number) {
+  const sc = secAt(s), t = (lapPos(s) - sc.s0) / sc.len;
+  if ((sc.dir === 0 && !sc.wig) || sc.k < 0.3 || t < 0.12 || t > 0.88) return 348;
+  return 348 - 250 * Math.pow(sc.k, 1.2) + (aeroT > 0 ? 40 : 0);
+}
 let shield = false, invT = 0, magT = 0, pitT = 0, oilT = 0, flatT = 0, rainT = 0, vxL = 0, flatDir = 1, brakeIn = false, squealT = 0, flashT = 0, gameT = 0;
 let curSection = "", clearT = 0, crashT = 0, steerIn = 0, lastClearBonus = 0;
 let br = { dist: 0, over: 0, near: 0, pick: 0, clear: 0, nOver: 0, nNear: 0 };
 const PLAYER_Y = () => Math.round(H * 0.74);
 const baseSpeed = (L: number) => 95 * Math.pow(1.25, Math.min(L, 7) - 1);
 const levelLength = (_L: number) => LAP_PX;
-const botCount = (L: number) => 56 + 18 * (L - 1);
+const botCount = (L: number) => Math.min(200, Math.round(56 * Math.pow(1.35, L - 1)));
+const quirkShare = (L: number) => Math.min(0.95, 0.15 * Math.pow(1.5, L - 1));
+const downCount = (L: number) => Math.min(40, Math.round(4 * Math.pow(1.5, L - 1)));
+const upCount = (L: number) => Math.min(14, Math.round(8 * Math.pow(1.08, L - 1)));
+const MIN_GAP = 90, MAX_ACTIVE = 6;
 let pending: Bot[] = [], god = false;
 let lapStartT = 0, bestLap = 0, splits: number[] = [], lastSector = 0;
 const BOT_COLS = ["#d23b3b", "#f0c419", "#3b7bd2", "#e8e8e8", "#38a84a", "#ff7a1a", "#9b4fd2", "#222"];
@@ -106,26 +119,30 @@ function startLevel() {
   // density ramps through the lap: sector weights 0.6 / 1.0 / 1.4
   const cum = (u: number) => (u < 1 / 3 ? 0.8 * u : u < 2 / 3 ? 0.2667 + (u - 1 / 3) : 0.6 + 1.2 * (u - 2 / 3)) / 1.0;
   const inv = (v: number) => { let lo = 0, hi = 1; for (let i = 0; i < 30; i++) { const m = (lo + hi) / 2; if (cum(m) < v) lo = m; else hi = m; } return lo; };
+  const q = quirkShare(level); let lastS = -1e9;
   for (let i = 0; i < n; i++) {
     const u = inv(((i + rnd(0.15, 0.85)) / n) * 1.0);
-    const s = levelStart + 300 + u * (levelLen - 500);
-    const sector = Math.floor(u * 3), smart = Math.min(4, level + sector);
-    const kind = smart <= 1 ? (Math.random() < 0.3 ? 1 : 0) : Math.floor(rnd(0, Math.min(4, smart)));
+    let s = i === 0 ? levelStart + 260 : levelStart + 300 + u * (levelLen - 500);
+    if (s - lastS < MIN_GAP) s = lastS + MIN_GAP; // always passable
+    if (s > levelStart + levelLen - 150) break;
+    lastS = s;
+    const quirky = Math.random() < q * (0.75 + 0.25 * Math.floor(u * 3));
+    const pick = Math.floor(Math.random() * 6); // 1 lane-changer, 2 braker, 3 blocker, 4 weaver, 5 surger, 6=pair
+    const kind = quirky ? (pick === 0 ? 6 : pick) : 0;
     const off = rnd(-0.6, 0.6);
-    const kind2 = smart >= 2 && Math.random() < 0.3 ? 4 + Math.floor(rnd(0, smart >= 3 ? 2 : 1)) : kind;
     const mk = (s2: number, o: number, k: number): Bot => ({ s: s2, off: o, tOff: o, ratio: rnd(0.28, 0.48) + Math.min(0.12, 0.03 * (level - 1)), base: 0, kind: k, t: rnd(0, 3), brake: 0, passed: false, gap: 99, col: BOT_COLS[i % BOT_COLS.length], spr: Math.floor(Math.random() * BOTS.length), ph: rnd(0, 6.3) });
-    const b0 = mk(i === 0 ? levelStart + 260 : s, off, kind2); pending.push(b0);
-    if (sector >= 1 && Math.random() < 0.15) { const b1 = mk(b0.s + 34, off > 0 ? -0.65 : 0.65, 0); b1.ratio = b0.ratio; pending.push(b1); } // staggered pair
+    const b0 = mk(s, off, kind === 6 ? 0 : kind); pending.push(b0);
+    if (kind === 6) { const b1 = mk(s + 34, off > 0 ? -0.65 : 0.65, 0); b1.ratio = b0.ratio; pending.push(b1); } // staggered pair, opposite side
   }
   pending.sort((a, c) => a.s - c.s);
-  const UPS: PT[] = ["R", "T", "S", "X", "P"], DN: PT[] = ["O", "F", "B", "D", "W"];
-  const np = 8 + level, nd = 5 + 2 * level;
+  const UPS: PT[] = ["A", "R", "T", "S", "X", "P"], DN: PT[] = ["O", "F", "B", "D", "W"];
+  const np = upCount(level), nd = downCount(level);
   for (let i = 0; i < np; i++) picks.push({ s: levelStart + ((i + rnd(0.2, 0.8)) / np) * levelLen, off: rnd(-0.5, 0.5), type: UPS[i % UPS.length], got: false });
   for (let i = 0; i < nd; i++) picks.push({ s: levelStart + 400 + ((i + rnd(0.2, 0.8)) / nd) * (levelLen - 400), off: rnd(-0.6, 0.6), type: DN[Math.floor(Math.random() * DN.length)], got: false });
-  showBanner(`LAP ${level}`, `Nordschleife 20.8 km · ${n} bots`);
+  showBanner(`LAP ${level}`, `Nordschleife 20.8 km · ${pending.length} bots · ${nd} hazards`);
 }
 function newRun() {
-  level = 1; pS = 0; bestLap = 0; px = center(0); camX = px; speed = 0; score = 0; runT = 0;
+  level = 1; pS = 0; bestLap = 0; vK = 0; gearN = 1; rpmN = 1000; aeroT = 0; px = center(0); camX = px; speed = 0; score = 0; runT = 0;
   combo = 0; comboT = 0; boosts = 0; nextBoostAt = 3000; boostT = 0; regenT = 0; tvT = 0; parts = [];
   shield = false; invT = magT = pitT = oilT = flatT = rainT = vxL = 0; brakeIn = false;
   br = { dist: 0, over: 0, near: 0, pick: 0, clear: 0, nOver: 0, nNear: 0 };
@@ -165,10 +182,13 @@ function updHud() {
   if (oilT > 0) dn("OIL SLICK " + oilT.toFixed(1));
   if (flatT > 0) dn("FLAT TYRE " + flatT.toFixed(1));
   if (rainT > 0) dn("RAIN " + rainT.toFixed(1));
-  const kmh = Math.round((520 * speed) / (speed + 190));
+  const kmh = Math.round(vK);
+  if (aeroT > 0) up("ACTIVE WING " + aeroT.toFixed(1));
+  $("spd").classList.toggle("shift", gearFlash > 0);
   $("kmh").textContent = String(kmh).padStart(3, " ");
-  $("gear").textContent = String(audio.gear);
-  ($("rpm").firstElementChild as HTMLElement).style.width = Math.min(100, (audio.rpm / 9000) * 100) + "%";
+  $("gear").textContent = String(gearN);
+  ($("rpm").firstElementChild as HTMLElement).style.width = Math.min(100, (rpmN / REDLINE) * 100) + "%";
+  $("rpmn").textContent = String(Math.round(rpmN / 100) * 100);
   $("spd").classList.toggle("boost", boostT > 0);
   $("fx").innerHTML = fx.join("<br>");
   $("pips").textContent = "■".repeat(boosts) + "□".repeat(3 - boosts);
@@ -190,17 +210,30 @@ function boardHtml() {
 function showTitle() {
   st = "title"; showPlay(false); menu.classList.remove("off");
   menu.innerHTML = `<div class="card"><h2>LH CARS PRESENTS</h2><h1>MISSION S</h1>
-  <p>A mid-engined super sports car. One lap = the full 20.8 km Nordschleife.</p>
-  <p class="feat">⚡ E-BOOST hybrid overboost · REGEN braking · TORQUE VECTORING</p>
+  <p>Porsche's mid-engined super sports car concept (shown 15 Oct 2026). One lap = the full 20.8 km Nordschleife.</p>
+  <button class="alt" id="spec">SPEC</button>
   <p>◀ ▶ steer: hold left/right side · arrows or A/D<br>BRAKE pad · ↓ or S &nbsp; E-BOOST pad · Space/Shift<br>Esc pause · R retry · M mute<br>Dodge the hypercar field. Grass slows you. Contact ends the run.</p>
-  <p class="leg"><span class="u">COLLECT</span> <i class="ic" style="background:#7dff9a"></i>REGEN <i class="ic" style="background:#ffd23f"></i>TORQUE VEC <i class="ic" style="background:#4fd2ff"></i>CARBON CAGE (1 hit) <i class="ic" style="background:#ff7ad9"></i>MAGNET x2 <i class="ic" style="background:#ffffff"></i>PIT SLOW-MO</p>
+  <p class="leg"><span class="u">MISSION S FEATURE</span> <i class="ic" style="background:#e8202e"></i>ACTIVE REAR WING (more corner grip)</p>
+  <p class="leg"><span class="u">GAME POWER-UPS</span> <i class="ic" style="background:#4fd2ff"></i>E-BOOST (hybrid-style, earned) <i class="ic" style="background:#7dff9a"></i>REGEN <i class="ic" style="background:#ffd23f"></i>TORQUE VEC <i class="ic" style="background:#4fd2ff"></i>CARBON CAGE (1 hit) <i class="ic" style="background:#ff7ad9"></i>MAGNET x2 <i class="ic" style="background:#ffffff"></i>PIT SLOW-MO</p>
   <p class="leg"><span class="d">AVOID</span> <i class="ic dn"></i>OIL SLICK · FLAT TYRE · LOW BATTERY · DEBRIS · RAIN</p>
   <canvas id="roster" width="200" height="22"></canvas><p style="font-size:8px;margin-top:0">HYPERCAR FIELD</p>
   <button id="go">START</button><button class="alt" id="lb">LEADERBOARD</button></div>`;
   $("go").onclick = () => newRun();
   $("lb").onclick = () => showBoard();
+  $("spec").onclick = () => showSpec();
   const rc = $<HTMLCanvasElement>("roster"), rg = rc.getContext("2d")!; rg.imageSmoothingEnabled = false;
   rg.drawImage(PLAYER.cv, 0, 1); BOTS.forEach((b, i) => rg.drawImage(b.cv, 16 + i * 14, 1));
+}
+function showSpec() {
+  st = "board"; showPlay(false); menu.classList.remove("off");
+  menu.innerHTML = `<div class="card spec"><h2>MISSION S · SPEC</h2>
+  <p class="u">CONFIRMED (Porsche, show car, Oct 2026)</p>
+  <p>Mid-engine super sports car platform above the 911 · combustion, hybrid or plug-in hybrid possible, no full EV · manual or PDK possible · height-adjustable gear lever · rev counter to 8,000 rpm · fully integrated active rear wing · 917-style radiator fan cooling · 928 "dial" lightweight wheels · round headlights + aero-blade lights · Firn White Metallic, Light Red Metallic, Black Chrome</p>
+  <p class="d">NOT PUBLISHED · GAME USES CONCEPT ESTIMATES</p>
+  <p>Engine: 5.0 twin-turbo flat-8 (rumour) · power ~850 PS (press estimate) · gearbox 7-speed PDK · 0-100 km/h 2.8 s · 0-200 km/h 6.5 s · top speed ~340 km/h · shift 7,800 rpm</p>
+  <p>E-BOOST, REGEN, TORQUE VEC, CARBON CAGE, MAGNET, PIT = game power-ups, not Mission S specs.</p>
+  <button id="bk">BACK</button></div>`;
+  $("bk").onclick = () => showTitle();
 }
 function showBoard() {
   st = "board"; showPlay(false); menu.classList.remove("off");
@@ -261,8 +294,8 @@ const audio = (() => {
   let ac: AudioContext | null = null, master: GainNode, eg: GainNode;
   let oF: OscillatorNode, oH: OscillatorNode, oSub: OscillatorNode, oW: OscillatorNode, lp: BiquadFilterNode, bp: BiquadFilterNode;
   let gW: GainNode, gN: GainNode, am: GainNode, lfo: OscillatorNode, lfoG: GainNode;
-  let gear = 1, rpm = 1200, shiftT = 0;
-  const CYL = 8, RATIOS = [0, 3.4, 2.4, 1.85, 1.5, 1.25, 1.06, 0.9], REDLINE = 9000;
+  let gear = 1, rpm = 1200;
+  const CYL = 8;
   let muted = localStorage.getItem("missions.mute") === "1";
   const init = () => {
     if (ac) return;
@@ -299,27 +332,21 @@ const audio = (() => {
     get muted() { return muted; },
     start() { init(); ac!.resume(); },
     toggle() { muted = !muted; localStorage.setItem("missions.mute", muted ? "1" : "0"); if (ac) master.gain.value = muted ? 0 : 0.5; $("bmute").textContent = muted ? "×" : "♪"; },
-    engine(sp: number, boost: boolean) {
+    engine(r: number, g: number, boost: boolean, thr: number) {
       if (!ac) return; const t = ac.currentTime;
-      // speed -> rpm through a 7-speed gearbox, with shifts at ~8600 rpm (PDK-style quick upshift dip)
-      const wheel = sp * 26; // arbitrary wheel-rpm scale tuned so lap-1 cruise ~ 5th gear
-      let r = wheel * RATIOS[gear];
-      if (r > REDLINE - 1500 && gear < 7) { gear++; shiftT = 0.12; }
-      else if (gear > 1 && wheel * RATIOS[gear - 1] < REDLINE * 0.62) gear--;
-      r = Math.max(1100, wheel * RATIOS[gear]);
-      if (shiftT > 0) { shiftT -= 1 / 60; r *= 0.93; }
-      rpm += (r - rpm) * 0.25;
+      rpm += (r - rpm) * 0.35; gear = g;
       const f = (rpm / 60) * (CYL / 2), load = Math.min(1, rpm / REDLINE);
-      oF.frequency.setTargetAtTime(f, t, 0.03); oH.frequency.setTargetAtTime(f * 2, t, 0.03); oSub.frequency.setTargetAtTime(f / 2, t, 0.03);
+      oF.frequency.setTargetAtTime(f, t, 0.02); oH.frequency.setTargetAtTime(f * 2, t, 0.02); oSub.frequency.setTargetAtTime(f / 2, t, 0.02);
       lfo.frequency.setTargetAtTime(f / 4, t, 0.05);
-      lp.frequency.setTargetAtTime(350 + 2600 * load * load + (boost ? 600 : 0), t, 0.06);
+      lp.frequency.setTargetAtTime(300 + 2400 * load * load * (0.6 + 0.4 * thr) + (boost ? 600 : 0), t, 0.05);
       bp.frequency.setTargetAtTime(500 + 2500 * load, t, 0.08);
-      gN.gain.setTargetAtTime(0.02 + 0.06 * load, t, 0.1);
-      lfoG.gain.setTargetAtTime(0.25 * (1 - load) + 0.04, t, 0.1); // burbly low down, smooth near redline
-      oW.frequency.setTargetAtTime(900 + sp * 9, t, 0.05);
+      gN.gain.setTargetAtTime((0.02 + 0.06 * load) * (0.5 + 0.5 * thr), t, 0.1);
+      lfoG.gain.setTargetAtTime(0.25 * (1 - load) + 0.04 + (thr < 0.5 ? 0.12 : 0), t, 0.1); // overrun burble off-throttle
+      oW.frequency.setTargetAtTime(900 + rpm * 0.25, t, 0.05);
       gW.gain.setTargetAtTime(boost ? 0.07 : 0, t, boost ? 0.08 : 0.3);
-      eg.gain.setTargetAtTime(0.1 + 0.16 * load + (boost ? 0.04 : 0), t, 0.08);
+      eg.gain.setTargetAtTime((0.08 + 0.16 * load) * (0.55 + 0.45 * thr) + (boost ? 0.04 : 0), t, 0.06);
     },
+    shift(upS: boolean) { if (!ac) return; const t = ac.currentTime; eg.gain.cancelScheduledValues(t); eg.gain.setValueAtTime(eg.gain.value * (upS ? 0.35 : 1.2), t); if (upS) tone(140, 90, 0.06, "square", 0.08); else tone(220, 330, 0.08, "sawtooth", 0.05); },
     get rpm() { return rpm; }, get gear() { return gear; }, get ready() { return !!ac; },
     idle() { if (ac) eg.gain.setTargetAtTime(0, ac.currentTime, 0.05); },
     squeal() { tone(2300, 1700, 0.4, "sawtooth", 0.025); tone(2900, 2500, 0.35, "triangle", 0.02); },
@@ -383,7 +410,7 @@ function readSteer() {
 }
 function fireBoost() {
   if (boosts <= 0 || boostT > 0) return;
-  boosts--; boostT = 2.5; flashT = 0.2; audio.boost(); showBanner("⚡ E-BOOST", "electric overboost · 2× points");
+  boosts--; boostT = 2.5; flashT = 0.2; audio.boost(); showBanner("⚡ E-BOOST", "game feature · hybrid-style overboost · 2× points");
 }
 
 // ---------- update ----------
@@ -402,13 +429,29 @@ function update(dtReal: number) {
   const half = width(pS) / 2, c = center(pS);
   const off = Math.abs(px - c) > half - 2;
   const base = baseSpeed(level);
-  let target = base * (boostT > 0 ? 1.6 : 1) * (regenT > 0 ? 0.55 : 1) * (off ? 0.45 : 1);
-  if (brakeIn) target = Math.min(target, base * 0.3);
-  speed += (target - speed) * Math.min(1, dt * (target < speed ? (brakeIn ? 2.2 : 3.5) : 1.4));
+  // longitudinal: a(v) = 38 km/h/s * (1 - (v/348)^1.5)  -> est. 0-100 2.8 s, 0-200 6.5 s, ~340 km/h
+  const vtop = (off ? 110 : 348) + (aeroT > 0 ? 8 : 0);
+  let acc = 38 * (1 - Math.pow(Math.min(vK, vtop) / vtop, 1.5)) * (boostT > 0 ? 1.6 : 1);
+  if (shiftCut > 0) { shiftCut -= dt; acc *= 0.2; }
+  if (vK > vtop) acc = -45;
+  if (brakeIn) acc = -58;                 // ~1.6 g carbon-ceramic class braking (estimate)
+  else if (regenT > 0) acc = Math.min(acc, -30);
+  vK = clamp(vK + acc * dt, 0, 360);
+  // PDK-style 7-speed (gear count is a concept estimate)
+  if (rpmN >= UPSHIFT && gearN < 7 && acc > 0) { gearN++; shiftCut = 0.08; gearFlash = 0.4; audio.shift(true); }
+  else if (gearN > 1 && vK * G[gearN - 1] < 5600) { gearN--; gearFlash = 0.4; audio.shift(false); }
+  rpmN = Math.max(vK < 25 && !brakeIn ? 3500 : 1000, Math.min(REDLINE, vK * G[gearN]));
+  speed = pxFromK(level, vK) * (boostT > 0 ? 1.1 : 1);
+  // understeer when over the corner's grip limit
+  const lim = vLimAt(pS), outside = -Math.sign(center(pS + 30) - center(pS - 30));
+  const push = vK > lim ? clamp((vK - lim) / lim, 0, 1) * 55 * outside : 0;
+  let minAhead = 999; for (let d = 60; d <= 420; d += 60) minAhead = Math.min(minAhead, vLimAt(pS + d));
+  $("bz").textContent = vK > minAhead + 35 ? `BRAKE ▼ ${Math.round(minAhead)}` : "";
+  gearFlash = Math.max(0, gearFlash - dt); aeroT = Math.max(0, aeroT - dt);
   squealT -= dt;
-  if (brakeIn && speed > 140 && squealT <= 0) { audio.squeal(); squealT = 0.45; }
-  const steerSp = (tvT > 0 ? 165 : 105) * (0.7 + 0.3 * Math.min(1, speed / base)) * (flatT > 0 ? 0.5 : 1);
-  let desired = steerIn * steerSp + (flatT > 0 ? flatDir * 22 : 0) + (oilT > 0 ? Math.sin(gameT * 9) * 45 : 0);
+  if (brakeIn && vK > 150 && squealT <= 0) { audio.squeal(); squealT = 0.45; }
+  const steerSp = (tvT > 0 ? 165 : 105) * (0.7 + 0.3 * Math.min(1, speed / base) + 0 * base) * (flatT > 0 ? 0.5 : 1);
+  let desired = push + steerIn * steerSp + (flatT > 0 ? flatDir * 22 : 0) + (oilT > 0 ? Math.sin(gameT * 9) * 45 : 0);
   const grip = oilT > 0 ? 2 : rainT > 0 ? 3.5 : 40;
   const steps = Math.max(1, Math.ceil((speed * dt) / 4));
   const sd = dt / steps;
@@ -447,7 +490,7 @@ function update(dtReal: number) {
     lastClearBonus = 1000 * level; addScore(lastClearBonus); br.clear += lastClearBonus;
     st = "clear"; clearT = 1.8; audio.pick(); showBanner(`LAP ${level} CLEAR`, `${fmtT(runT - lapStartT)} · +${lastClearBonus} · next lap faster`);
   }
-  audio.engine(speed, boostT > 0);
+  audio.engine(rpmN, gearN, boostT > 0, brakeIn ? 0 : acc > 0 ? 1 : 0.3);
 }
 function applyPick(t: PT) {
   if (DOWNS.includes(t)) {
@@ -455,13 +498,14 @@ function applyPick(t: PT) {
     if (t === "O") { oilT = 2.5; showBanner("⚠ OIL SLICK", "grip lost"); }
     if (t === "F") { flatT = 4; flatDir = Math.random() < 0.5 ? -1 : 1; showBanner("⚠ FLAT TYRE", "slow steering · pulling"); }
     if (t === "B") { const had = boosts; boosts = Math.max(0, boosts - 1); boostT = 0; showBanner("⚠ LOW BATTERY", had ? "-1 E-BOOST charge" : "boost cut"); }
-    if (t === "D") { speed *= 0.5; showBanner("⚠ DEBRIS", "speed cut"); }
+    if (t === "D") { vK *= 0.6; showBanner("⚠ DEBRIS", "speed cut"); }
     if (t === "W") { rainT = 4; showBanner("⚠ RAIN", "slippery · 4 s"); }
     return;
   }
   audio.pick(); addScore(200); br.pick += 200;
-  if (t === "R") { regenT = 1.6; if (boosts < 3) boosts++; showBanner("REGEN", "braking energy → +1 E-BOOST"); }
-  if (t === "T") { tvT = 6; showBanner("TORQUE VECTORING", "sharper steering · 6 s"); }
+  if (t === "A") { aeroT = 6; showBanner("ACTIVE REAR WING", "Mission S feature · more grip in corners · 6 s"); }
+  if (t === "R") { regenT = 1.6; if (boosts < 3) boosts++; showBanner("REGEN", "game power-up · +1 E-BOOST"); }
+  if (t === "T") { tvT = 6; showBanner("TORQUE VECTORING", "game power-up · sharper steering · 6 s"); }
   if (t === "S") { shield = true; showBanner("CARBON CAGE", "absorbs one hit"); }
   if (t === "X") { magT = 6; showBanner("MAGNET x2", "double points · 6 s"); }
   if (t === "P") { pitT = 4; showBanner("PIT STOP", "slow-mo · 4 s"); }
@@ -471,7 +515,7 @@ function stepBots(dt: number) {
   // bots are scheduled by track position and only enter the sim just above the screen top,
   // so they meet the player where planned instead of driving away from lap start.
   // (pending is sorted at lap start)
-  while (pending.length && pending[0].s - pS < 420) { const b = pending.shift()!; if (b.s > pS + 40) bots.push(b); }
+  while (pending.length && pending[0].s - pS < 420) { if (pending[0].s > pS + 40 && bots.filter((x) => x.s > pS - 30).length >= MAX_ACTIVE) { pending[0].s += 60; break; } const b = pending.shift()!; if (b.s > pS + 40) bots.push(b); }
   for (const b of bots) {
     b.t -= dt;
     if (b.t <= 0) {
@@ -528,7 +572,7 @@ function drawPick(p: Pick, x: number, y: number) {
     if (p.type === "W") { ctx.fillStyle = "#3a7bd2"; ctx.fillRect(x - 4, y - 2, 8, 4); ctx.fillStyle = "#9cc8ff"; ctx.fillRect(x - 2, y - 3, 1, 2); ctx.fillRect(x + 2, y - 1, 1, 2); }
     return;
   }
-  const col: Record<string, string> = { R: "#7dff9a", T: "#ffd23f", S: "#4fd2ff", X: "#ff7ad9", P: "#ffffff" };
+  const col: Record<string, string> = { A: "#e8202e", R: "#7dff9a", T: "#ffd23f", S: "#4fd2ff", X: "#ff7ad9", P: "#ffffff" };
   ctx.fillStyle = "#fff"; ctx.fillRect(x - 5, y - 5, 10, 10);
   ctx.fillStyle = col[p.type]; ctx.fillRect(x - 4, y - 4, 8, 8);
   ctx.fillStyle = blink ? "#fff" : "#111"; ctx.fillRect(x - 2, y - 2, 4, 4);
@@ -645,4 +689,4 @@ if (OG) {
   showTitle();
   requestAnimationFrame(frame);
 }
-(window as any).__ms = { audio, setGod(v: boolean) { god = v; }, get visBots() { return bots.filter((b) => { const y = PLAYER_Y() - (b.s - pS); return y > -10 && y < H + 10; }).length; }, get nPending() { return pending.length; }, get speed() { return speed; }, get shield() { return shield; }, get fx() { return { oilT, flatT, rainT, magT, pitT, boosts }; }, give(t: PT) { applyPick(t); }, setBoosts(n: number) { boosts = n; }, sprites: { PLAYER, BOTS }, get bestLap() { return bestLap; }, get km() { return kmAt(pS); }, jump(d: number) { pS += d; }, get st() { return st; }, get score() { return score; }, get runT() { return runT; }, get px() { return px; }, get pS() { return pS; }, get level() { return level; }, forceBot() { const b = bots[0] || ({} as Bot); bots.unshift({ ...b, s: pS + 40, off: (px - center(pS + 40)) / (width(pS + 40) / 2 - 7), tOff: (px - center(pS + 40)) / (width(pS + 40) / 2 - 7), ratio: 0, kind: 0, t: 99, brake: 0, passed: false, gap: 99, col: "#d23b3b" }); } };
+(window as any).__ms = { audio, get vK() { return vK; }, get gearN() { return gearN; }, get rpmN() { return rpmN; }, setV(v: number) { vK = v; }, botPlan(L: number) { return { bots: botCount(L), quirk: quirkShare(L), downs: downCount(L), ups: upCount(L) }; }, setGod(v: boolean) { god = v; }, get visBots() { return bots.filter((b) => { const y = PLAYER_Y() - (b.s - pS); return y > -10 && y < H + 10; }).length; }, get nPending() { return pending.length; }, get speed() { return speed; }, get shield() { return shield; }, get fx() { return { oilT, flatT, rainT, magT, pitT, boosts }; }, give(t: PT) { applyPick(t); }, setBoosts(n: number) { boosts = n; }, sprites: { PLAYER, BOTS }, get bestLap() { return bestLap; }, get km() { return kmAt(pS); }, jump(d: number) { pS += d; }, get st() { return st; }, get score() { return score; }, get runT() { return runT; }, get px() { return px; }, get pS() { return pS; }, get level() { return level; }, forceBot() { const b = bots[0] || ({} as Bot); bots.unshift({ ...b, s: pS + 40, off: (px - center(pS + 40)) / (width(pS + 40) / 2 - 7), tOff: (px - center(pS + 40)) / (width(pS + 40) / 2 - 7), ratio: 0, kind: 0, t: 99, brake: 0, passed: false, gap: 99, col: "#d23b3b" }); } };
