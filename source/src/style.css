@@ -35,3 +35,5 @@ tr.me td{color:#7ff0ff}
 input{font:inherit;font-size:20px;width:120px;text-align:center;text-transform:uppercase;background:#000;color:#fff;border:2px solid #ffd23f;padding:8px;letter-spacing:6px}
 .bd{font-size:10px;text-align:left;margin:10px auto;max-width:300px}
 .bd div{display:flex;justify-content:space-between}
+#spl{color:#ffd23f;margin-top:4px;font-size:8px;line-height:1.5}
+#map{display:block;margin-top:6px;width:96px;height:72px;image-rendering:pixelated}
