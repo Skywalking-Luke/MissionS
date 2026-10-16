@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Mission S" />
+    <title>Mission S</title>
+    <link rel="icon" type="image/png" href="/MissionS/favicon.png" />
+    <link rel="apple-touch-icon" href="/MissionS/icon-180.png" />
+    <meta name="description" content="Mission S: a free pixel-art electric sports car race around the Nordschleife. Dodge the bots, chain near misses, fire E-BOOST. No account." />
+    <meta name="theme-color" content="#0b1a10" />
+    <meta property="og:title" content="Mission S" />
+    <meta property="og:description" content="Pixel-art electric sports car racing on the Nordschleife. Dodge the bots, chain near misses, fire E-BOOST." />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://lhcars.my/MissionS/" />
+    <meta property="og:image" content="https://lhcars.my/MissionS/og.jpg?v=1" />
+    <meta property="og:image:type" content="image/jpeg" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Mission S" />
+    <meta name="twitter:description" content="Pixel-art electric sports car racing on the Nordschleife. Dodge the bots, chain near misses, fire E-BOOST." />
+    <meta name="twitter:image" content="https://lhcars.my/MissionS/og.jpg?v=1" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="./src/style.css" />
+  </head>
+  <body>
+    <div id="app">
+      <canvas id="c"></canvas>
+      <div id="hud" class="hidden">
+        <div class="row"><span id="score">0</span><span id="lvl">LAP 1</span></div>
+        <div class="row small"><span id="time">0:00.0</span><span id="combo"></span></div>
+        <div id="prog"><i></i></div>
+        <div id="fx" class="small"></div>
+      </div>
+      <div id="banner"></div>
+      <div id="pop"></div>
+      <div id="tl">
+        <button id="bpause" aria-label="Pause">II</button>
+        <button id="bmute" aria-label="Mute">♪</button>
+        <button id="bfs" aria-label="Fullscreen">⛶</button>
+      </div>
+      <div id="pads" class="hidden">
+        <div class="pad" id="pl">◀</div>
+        <button id="bboost">E-BOOST<br /><span id="pips"></span></button>
+        <div class="pad" id="pr">▶</div>
+      </div>
+      <div id="menu"></div>
+    </div>
+    <script type="module" src="./src/main.ts"></script>
+  </body>
+</html>
