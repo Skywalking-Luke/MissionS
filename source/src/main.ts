@@ -142,6 +142,7 @@ function startLevel() {
   showBanner(`LAP ${level}`, `Nordschleife 20.8 km · ${pending.length} bots · ${nd} hazards`);
 }
 function newRun() {
+  runId++; contUsed = false;
   level = 1; pS = 0; bestLap = 0; vK = 0; gearN = 1; rpmN = 1000; aeroT = 0; px = center(0); camX = px; speed = 0; score = 0; runT = 0;
   combo = 0; comboT = 0; boosts = 0; nextBoostAt = 3000; boostT = 0; regenT = 0; tvT = 0; parts = [];
   shield = false; invT = magT = pitT = oilT = flatT = rainT = vxL = 0; brakeIn = false;
@@ -240,6 +241,25 @@ function showBoard() {
   menu.innerHTML = `<div class="card"><h2>TOP 10</h2>${boardHtml()}<p>Ranked by points, faster time wins ties. Saved on this device.</p><button id="go">RACE</button><button class="alt" id="bk">BACK</button></div>`;
   $("go").onclick = () => newRun(); $("bk").onclick = () => showTitle();
 }
+type LHAdsApi = { rewardEnabled?: boolean; banner?: (el: HTMLElement) => void; offerReward?: (cb: (show: () => Promise<boolean>) => void) => void };
+let contUsed = false, runId = 0;
+function adsOnOver() {
+  const ads = (window as unknown as { LHAds?: LHAdsApi }).LHAds;
+  const slot = document.getElementById("adslot");
+  if (slot) ads?.banner?.(slot);
+  const btn = document.getElementById("cont") as HTMLButtonElement | null;
+  if (!btn || !ads?.rewardEnabled || contUsed) return;
+  const myRun = runId;
+  ads.offerReward?.((show) => {
+    if (st !== "over" || runId !== myRun || contUsed) return;
+    btn.style.display = "";
+    btn.onclick = () => { btn.disabled = true; show().then((ok) => { if (ok && st === "over" && runId === myRun) continueRun(); else btn.style.display = "none"; }); };
+  });
+}
+function continueRun() {
+  if (st !== "over" || contUsed) return;
+  contUsed = true; st = "play"; invT = 2.5; crashT = 0; menu.classList.add("off"); menu.innerHTML = ""; showPlay(true);
+}
 function gameOver() {
   st = "over"; crashT = 0; audio.crash(); showPlay(false);
   setTimeout(() => {
@@ -250,7 +270,8 @@ function gameOver() {
     <p>Lap ${level} · ${fmtT(runT)} · ${sectionAt(pS)} km ${kmAt(pS).toFixed(1)}${bestLap ? ` · best lap ${fmtT(bestLap)}` : ""}</p>
     <div class="bd"><div><span>Distance</span><span>${Math.floor(br.dist)}</span></div><div><span>Overtakes ×${br.nOver}</span><span>${br.over}</span></div><div><span>Near misses ×${br.nNear}</span><span>${br.near}</span></div><div><span>Pickups</span><span>${br.pick}</span></div><div><span>Lap bonuses</span><span>${br.clear}</span></div></div>
     ${q ? `<p>Top 10! Enter initials:</p><input id="ini" maxlength="3" autocomplete="off" /><br><button id="sv">SAVE</button>` : ""}
-    <button id="go">RETRY (R)</button><button class="alt" id="lb">BOARD</button></div>`;
+    <button id="cont" style="display:none">▶ WATCH AD TO CONTINUE</button><button id="go">RETRY (R)</button><button class="alt" id="lb">BOARD</button><div id="adslot" class="lh-ad" style="display:none;margin-top:8px"></div></div>`;
+    adsOnOver();
     $("go").onclick = () => newRun(); $("lb").onclick = () => showBoard();
     if (q) {
       const inp = $<HTMLInputElement>("ini");
