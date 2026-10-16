@@ -94,16 +94,17 @@ let br = { dist: 0, over: 0, near: 0, pick: 0, clear: 0, nOver: 0, nNear: 0 };
 const PLAYER_Y = () => Math.round(H * 0.74);
 const baseSpeed = (L: number) => 95 * Math.pow(1.25, Math.min(L, 7) - 1);
 const levelLength = (_L: number) => LAP_PX;
-const botCount = (L: number) => 40 + 16 * (L - 1);
+const botCount = (L: number) => 56 + 18 * (L - 1);
+let pending: Bot[] = [], god = false;
 let lapStartT = 0, bestLap = 0, splits: number[] = [], lastSector = 0;
 const BOT_COLS = ["#d23b3b", "#f0c419", "#3b7bd2", "#e8e8e8", "#38a84a", "#ff7a1a", "#9b4fd2", "#222"];
 
 function startLevel() {
   levelStart = pS; levelLen = levelLength(level); lapStartT = runT; splits = []; lastSector = 0;
-  bots = []; picks = [];
+  bots = []; picks = []; pending = [];
   const n = botCount(level);
   // density ramps through the lap: sector weights 0.6 / 1.0 / 1.4
-  const cum = (u: number) => (u < 1 / 3 ? 0.6 * u : u < 2 / 3 ? 0.2 + (u - 1 / 3) : 0.5333 + 1.4 * (u - 2 / 3)) / 1.0;
+  const cum = (u: number) => (u < 1 / 3 ? 0.8 * u : u < 2 / 3 ? 0.2667 + (u - 1 / 3) : 0.6 + 1.2 * (u - 2 / 3)) / 1.0;
   const inv = (v: number) => { let lo = 0, hi = 1; for (let i = 0; i < 30; i++) { const m = (lo + hi) / 2; if (cum(m) < v) lo = m; else hi = m; } return lo; };
   for (let i = 0; i < n; i++) {
     const u = inv(((i + rnd(0.15, 0.85)) / n) * 1.0);
@@ -112,10 +113,11 @@ function startLevel() {
     const kind = smart <= 1 ? (Math.random() < 0.3 ? 1 : 0) : Math.floor(rnd(0, Math.min(4, smart)));
     const off = rnd(-0.6, 0.6);
     const kind2 = smart >= 2 && Math.random() < 0.3 ? 4 + Math.floor(rnd(0, smart >= 3 ? 2 : 1)) : kind;
-    const mk = (s2: number, o: number, k: number): Bot => ({ s: s2, off: o, tOff: o, ratio: rnd(0.42, 0.62) + Math.min(0.12, 0.03 * (level - 1)), base: 0, kind: k, t: rnd(0, 3), brake: 0, passed: false, gap: 99, col: BOT_COLS[i % BOT_COLS.length], spr: Math.floor(Math.random() * BOTS.length), ph: rnd(0, 6.3) });
-    const b0 = mk(s, off, kind2); bots.push(b0);
-    if (sector >= 1 && Math.random() < 0.15) { const b1 = mk(s + 34, off > 0 ? -0.65 : 0.65, 0); b1.ratio = b0.ratio; bots.push(b1); } // staggered pair
+    const mk = (s2: number, o: number, k: number): Bot => ({ s: s2, off: o, tOff: o, ratio: rnd(0.28, 0.48) + Math.min(0.12, 0.03 * (level - 1)), base: 0, kind: k, t: rnd(0, 3), brake: 0, passed: false, gap: 99, col: BOT_COLS[i % BOT_COLS.length], spr: Math.floor(Math.random() * BOTS.length), ph: rnd(0, 6.3) });
+    const b0 = mk(i === 0 ? levelStart + 260 : s, off, kind2); pending.push(b0);
+    if (sector >= 1 && Math.random() < 0.15) { const b1 = mk(b0.s + 34, off > 0 ? -0.65 : 0.65, 0); b1.ratio = b0.ratio; pending.push(b1); } // staggered pair
   }
+  pending.sort((a, c) => a.s - c.s);
   const UPS: PT[] = ["R", "T", "S", "X", "P"], DN: PT[] = ["O", "F", "B", "D", "W"];
   const np = 8 + level, nd = 5 + 2 * level;
   for (let i = 0; i < np; i++) picks.push({ s: levelStart + ((i + rnd(0.2, 0.8)) / np) * levelLen, off: rnd(-0.5, 0.5), type: UPS[i % UPS.length], got: false });
@@ -466,6 +468,10 @@ function applyPick(t: PT) {
 }
 function stepBots(dt: number) {
   const base = baseSpeed(level);
+  // bots are scheduled by track position and only enter the sim just above the screen top,
+  // so they meet the player where planned instead of driving away from lap start.
+  // (pending is sorted at lap start)
+  while (pending.length && pending[0].s - pS < 420) { const b = pending.shift()!; if (b.s > pS + 40) bots.push(b); }
   for (const b of bots) {
     b.t -= dt;
     if (b.t <= 0) {
@@ -481,7 +487,7 @@ function stepBots(dt: number) {
     b.s += base * b.ratio * (b.brake > 0 ? 0.35 : 1) * dt;
     const bx = center(b.s) + b.off * (width(b.s) / 2 - 8);
     const dy = b.s - pS, dx = Math.abs(bx - px);
-    if (Math.abs(dy) < SH - 1 && dx < SW - 1) {
+    if (Math.abs(dy) < SH - 1 && dx < SW - 1 && !god) {
       if (invT > 0) continue;
       if (shield) { shield = false; invT = 1; b.s = -1e9; audio.bad(); popText("CARBON CAGE SAVED YOU"); for (let k = 0; k < 20; k++) parts.push({ x: px - camX + W / 2, y: PLAYER_Y() - 8, vx: rnd(-80, 80), vy: rnd(-80, 40), life: 0.5, c: "#4fd2ff" }); continue; }
       gameOver(); return;
@@ -639,4 +645,4 @@ if (OG) {
   showTitle();
   requestAnimationFrame(frame);
 }
-(window as any).__ms = { audio, get speed() { return speed; }, get shield() { return shield; }, get fx() { return { oilT, flatT, rainT, magT, pitT, boosts }; }, give(t: PT) { applyPick(t); }, setBoosts(n: number) { boosts = n; }, sprites: { PLAYER, BOTS }, get bestLap() { return bestLap; }, get km() { return kmAt(pS); }, jump(d: number) { pS += d; }, get st() { return st; }, get score() { return score; }, get runT() { return runT; }, get px() { return px; }, get pS() { return pS; }, get level() { return level; }, forceBot() { const b = bots[0] || ({} as Bot); bots.unshift({ ...b, s: pS + 40, off: (px - center(pS + 40)) / (width(pS + 40) / 2 - 7), tOff: (px - center(pS + 40)) / (width(pS + 40) / 2 - 7), ratio: 0, kind: 0, t: 99, brake: 0, passed: false, gap: 99, col: "#d23b3b" }); } };
+(window as any).__ms = { audio, setGod(v: boolean) { god = v; }, get visBots() { return bots.filter((b) => { const y = PLAYER_Y() - (b.s - pS); return y > -10 && y < H + 10; }).length; }, get nPending() { return pending.length; }, get speed() { return speed; }, get shield() { return shield; }, get fx() { return { oilT, flatT, rainT, magT, pitT, boosts }; }, give(t: PT) { applyPick(t); }, setBoosts(n: number) { boosts = n; }, sprites: { PLAYER, BOTS }, get bestLap() { return bestLap; }, get km() { return kmAt(pS); }, jump(d: number) { pS += d; }, get st() { return st; }, get score() { return score; }, get runT() { return runT; }, get px() { return px; }, get pS() { return pS; }, get level() { return level; }, forceBot() { const b = bots[0] || ({} as Bot); bots.unshift({ ...b, s: pS + 40, off: (px - center(pS + 40)) / (width(pS + 40) / 2 - 7), tOff: (px - center(pS + 40)) / (width(pS + 40) / 2 - 7), ratio: 0, kind: 0, t: 99, brake: 0, passed: false, gap: 99, col: "#d23b3b" }); } };
