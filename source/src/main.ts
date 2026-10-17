@@ -1,5 +1,6 @@
 import "./style.css";
 import { PLAYER, BOTS, SW, SH } from "./sprites";
+import { MP } from "./mp";
 
 // ---------- setup ----------
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -83,7 +84,7 @@ type PT = "A" | "R" | "T" | "S" | "X" | "P" | "O" | "F" | "B" | "D" | "W";
 type Pick = { s: number; off: number; type: PT; got: boolean };
 const DOWNS = "OFBDW";
 type Part = { x: number; y: number; vx: number; vy: number; life: number; c: string };
-type St = "title" | "play" | "pause" | "clear" | "over" | "board";
+type St = "title" | "play" | "pause" | "clear" | "over" | "board" | "mp";
 let st: St = "title";
 let level = 1, pS = 0, px = 0, camX = 0, speed = 0, score = 0, runT = 0, levelStart = 0, levelLen = 0;
 let bots: Bot[] = [], picks: Pick[] = [], parts: Part[] = [];
@@ -113,6 +114,7 @@ let lapStartT = 0, bestLap = 0, splits: number[] = [], lastSector = 0;
 const BOT_COLS = ["#d23b3b", "#f0c419", "#3b7bd2", "#e8e8e8", "#38a84a", "#ff7a1a", "#9b4fd2", "#222"];
 
 function startLevel() {
+  if (MP.racing) MP.rngSeed(level);
   levelStart = pS; levelLen = levelLength(level); lapStartT = runT; splits = []; lastSector = 0;
   bots = []; picks = []; pending = [];
   const n = botCount(level);
@@ -218,8 +220,9 @@ function showTitle() {
   <p class="leg"><span class="u">GAME POWER-UPS</span> <i class="ic" style="background:#4fd2ff"></i>E-BOOST (hybrid-style, earned) <i class="ic" style="background:#7dff9a"></i>REGEN <i class="ic" style="background:#ffd23f"></i>TORQUE VEC <i class="ic" style="background:#4fd2ff"></i>CARBON CAGE (1 hit) <i class="ic" style="background:#ff7ad9"></i>MAGNET x2 <i class="ic" style="background:#ffffff"></i>PIT SLOW-MO</p>
   <p class="leg"><span class="d">AVOID</span> <i class="ic dn"></i>OIL SLICK · FLAT TYRE · LOW BATTERY · DEBRIS · RAIN</p>
   <canvas id="roster" width="200" height="22"></canvas><p style="font-size:8px;margin-top:0">HYPERCAR FIELD</p>
-  <button id="go">START</button><button class="alt" id="lb">LEADERBOARD</button></div>`;
+  <button id="go">START</button><button class="alt" id="mpb">MULTIPLAYER</button><button class="alt" id="lb">LEADERBOARD</button></div>`;
   $("go").onclick = () => newRun();
+  $("mpb").onclick = () => MP.open();
   $("lb").onclick = () => showBoard();
   $("spec").onclick = () => showSpec();
   const rc = $<HTMLCanvasElement>("roster"), rg = rc.getContext("2d")!; rg.imageSmoothingEnabled = false;
@@ -261,6 +264,7 @@ function continueRun() {
   contUsed = true; st = "play"; invT = 2.5; crashT = 0; menu.classList.add("off"); menu.innerHTML = ""; showPlay(true);
 }
 function gameOver() {
+  if (MP.inRace) { st = "over"; crashT = 0; audio.crash(); showPlay(false); MP.finish("out"); return; }
   st = "over"; crashT = 0; audio.crash(); showPlay(false);
   setTimeout(() => {
     menu.classList.remove("off");
@@ -287,6 +291,7 @@ function gameOver() {
   }, 900);
 }
 function pause(on: boolean) {
+  if (MP.racing) return; // no pausing in a live multiplayer race
   if (on && st === "play") {
     st = "pause"; audio.idle(); menu.classList.remove("off");
     menu.innerHTML = `<div class="card"><h2>PAUSED</h2><button id="rs">RESUME</button><button class="alt" id="rt">RETRY</button><button class="alt" id="qt">QUIT</button></div>`;
@@ -395,9 +400,9 @@ addEventListener("keydown", (e) => {
   if (k === "escape" || k === "p") { if (st === "play") pause(true); else if (st === "pause") pause(false); }
   if (k === "m") audio.toggle();
   if (k === "arrowdown" || k === "s") brakeKey = true;
-  if (k === "r" && st !== "title") newRun();
+  if (k === "r" && st !== "title" && !MP.active) newRun();
   if ((k === " " || k === "shift" || k === "b") && st === "play") fireBoost();
-  if (k === "enter" && (st === "title" || st === "board")) newRun();
+  if (k === "enter" && (st === "title" || st === "board") && !MP.active) newRun();
 });
 addEventListener("keyup", (e) => { const k = e.key.toLowerCase(); keys.delete(k); if (k === "arrowdown" || k === "s") brakeKey = false; });
 let brakeKey = false, brakePad = false;
@@ -509,6 +514,7 @@ function update(dtReal: number) {
   if (pS >= levelStart + levelLen) {
     const lt = runT - lapStartT; if (!bestLap || lt < bestLap) bestLap = lt;
     lastClearBonus = 1000 * level; addScore(lastClearBonus); br.clear += lastClearBonus;
+    if (MP.inRace && level >= MP.target) { st = "mp"; audio.pick(); showPlay(false); showBanner("FINISHED!", `${Math.floor(score)} PTS · ${fmtT(runT)}`); MP.finish("fin"); return; }
     st = "clear"; clearT = 1.8; audio.pick(); showBanner(`LAP ${level} CLEAR`, `${fmtT(runT - lapStartT)} · +${lastClearBonus} · next lap faster`);
   }
   audio.engine(rpmN, gearN, boostT > 0, brakeIn ? 0 : acc > 0 ? 1 : 0.3);
@@ -647,6 +653,13 @@ function render() {
     const y = pY - (b.s - pS); if (y < -20 || y > H + 20) continue;
     drawSprite(center(b.s) + b.off * (width(b.s) / 2 - 8) + shiftX, y, BOTS[b.spr ?? 0].cv, b.brake > 0);
   }
+  // multiplayer ghosts (no contact)
+  for (const g of MP.ghosts()) {
+    let y = pY - (g.y - pS); const x = Math.round(clamp(g.x + shiftX, 6, W - 6));
+    if (y < -12 || y > H + 12) { const upw = y < 0; y = upw ? 10 : H - 10; ctx.fillStyle = g.col; for (let i = 0; i < 4; i++) ctx.fillRect(x - i, upw ? y - 6 + i : y + 6 - i, 2 * i + 1, 1); MP.tag(g, x, upw ? y + 10 : y - 4); continue; }
+    ctx.globalAlpha = g.st === "out" ? 0.3 : 0.62; ctx.drawImage(MP.tint(PLAYER.cv, g.col, "ms"), Math.round(x - SW / 2), Math.round(y - SH / 2)); ctx.globalAlpha = 1;
+    MP.tag(g, x, y - SH / 2 - 1);
+  }
   // player
   const sx = px + shiftX;
   if (boostT > 0) { ctx.fillStyle = "#4fd2ff"; for (let i = 0; i < 6; i++) ctx.fillRect(Math.round(sx - 8 + hash(i + Math.floor(performance.now() / 50)) * 16), pY + 10 + i * 3, 1, 6); }
@@ -662,6 +675,7 @@ function render() {
   if (oilT > 0 || rainT > 0) { ctx.fillStyle = rainT > 0 ? "rgba(120,170,255,.12)" : "rgba(40,0,60,.12)"; ctx.fillRect(0, 0, W, H); }
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   if (st === "over") { ctx.fillStyle = `rgba(255,60,40,${Math.max(0, 0.5 - crashT)})`; ctx.fillRect(0, 0, W, H); }
+  MP.flushTags(cv);
 }
 
 // pixel text (binary-thresholded so it stays crisp when scaled)
@@ -680,11 +694,13 @@ let last = performance.now();
 function frame(now: number) {
   const dt = Math.min(0.05, (now - last) / 1000); last = now;
   if (st === "title" || st === "board") { pS += 60 * dt; px = center(pS); camX = px; }
+  MP.rngRun(() => {
   if (st === "clear") {
     clearT -= dt; pS += speed * dt; camX += (center(pS) - camX) * dt * 2; px += (center(pS) - px) * dt * 3;
     if (clearT <= 0) { level++; startLevel(); st = "play"; }
   }
   update(dt);
+  });
   render();
   if (st === "play" || st === "clear" || st === "pause") updHud();
   requestAnimationFrame(frame);
@@ -708,6 +724,12 @@ if (OG) {
   });
 } else {
   showTitle();
+  MP.init({
+    id: "missions", title: "MISSION S", color: "#7ff0ff", target: 1, unit: "LAP",
+    start: () => newRun(),
+    state: () => ({ p: pS, x: px, y: pS, a: 0, sc: score, lv: level, tm: runT, v: speed }),
+    quit: () => { st = "title"; showTitle(); },
+  });
   requestAnimationFrame(frame);
 }
 (window as any).__ms = { audio, get vK() { return vK; }, get gearN() { return gearN; }, get rpmN() { return rpmN; }, setV(v: number) { vK = v; }, botPlan(L: number) { return { bots: botCount(L), quirk: quirkShare(L), downs: downCount(L), ups: upCount(L) }; }, setGod(v: boolean) { god = v; }, get visBots() { return bots.filter((b) => { const y = PLAYER_Y() - (b.s - pS); return y > -10 && y < H + 10; }).length; }, get nPending() { return pending.length; }, get speed() { return speed; }, get shield() { return shield; }, get fx() { return { oilT, flatT, rainT, magT, pitT, boosts }; }, give(t: PT) { applyPick(t); }, setBoosts(n: number) { boosts = n; }, sprites: { PLAYER, BOTS }, get bestLap() { return bestLap; }, get km() { return kmAt(pS); }, jump(d: number) { pS += d; }, get st() { return st; }, get score() { return score; }, get runT() { return runT; }, get px() { return px; }, get pS() { return pS; }, get level() { return level; }, forceBot() { const b = bots[0] || ({} as Bot); bots.unshift({ ...b, s: pS + 40, off: (px - center(pS + 40)) / (width(pS + 40) / 2 - 7), tOff: (px - center(pS + 40)) / (width(pS + 40) / 2 - 7), ratio: 0, kind: 0, t: 99, brake: 0, passed: false, gap: 99, col: "#d23b3b" }); } };
